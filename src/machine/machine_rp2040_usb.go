@@ -77,7 +77,7 @@ func handleUSBIRQ(intr interrupt.Interrupt) {
 
 		if !ok {
 			// Stall endpoint?
-			sendStallViaEPIn(0)
+			SetStallEPIn(0)
 		}
 
 	}
@@ -139,26 +139,33 @@ func initEndpoint(ep, config uint32) {
 	offset := ep*2*usbBufferLen + 0x100
 	val |= offset
 
+	// Bulk and interrupt endpoints must have their Packet ID reset to DATA0 when un-stalled
+	epXPIDReset[ep] = false // Default to false in case an endpoint is re-initialized
+
 	switch config {
 	case usb.ENDPOINT_TYPE_INTERRUPT | usb.EndpointIn:
 		val |= usbEpControlEndpointTypeInterrupt
 		_usbDPSRAM.EPxControl[ep].In.Set(val)
+		epXPIDReset[ep] = true
 
 	case usb.ENDPOINT_TYPE_BULK | usb.EndpointOut:
 		val |= usbEpControlEndpointTypeBulk
 		_usbDPSRAM.EPxControl[ep].Out.Set(val)
 		_usbDPSRAM.EPxBufferControl[ep].Out.Set(usbBufferLen & usbBuf0CtrlLenMask)
 		_usbDPSRAM.EPxBufferControl[ep].Out.SetBits(usbBuf0CtrlAvail)
+		epXPIDReset[ep] = true
 
 	case usb.ENDPOINT_TYPE_INTERRUPT | usb.EndpointOut:
 		val |= usbEpControlEndpointTypeInterrupt
 		_usbDPSRAM.EPxControl[ep].Out.Set(val)
 		_usbDPSRAM.EPxBufferControl[ep].Out.Set(usbBufferLen & usbBuf0CtrlLenMask)
 		_usbDPSRAM.EPxBufferControl[ep].Out.SetBits(usbBuf0CtrlAvail)
+		epXPIDReset[ep] = true
 
 	case usb.ENDPOINT_TYPE_BULK | usb.EndpointIn:
 		val |= usbEpControlEndpointTypeBulk
 		_usbDPSRAM.EPxControl[ep].In.Set(val)
+		epXPIDReset[ep] = true
 
 	case usb.ENDPOINT_TYPE_CONTROL:
 		val |= usbEpControlEndpointTypeControl
@@ -245,7 +252,12 @@ func handleEndpointRx(ep uint32) []byte {
 }
 
 func handleEndpointRxComplete(ep uint32) {
-	epXdata0[ep] = !epXdata0[ep]
+	setEPDataPID(ep, !epXdata0[ep])
+}
+
+// Set the USB endpoint Packet ID to DATA0 or DATA1
+func setEPDataPID(ep uint32, dataOne bool) {
+	epXdata0[ep&0x7F] = dataOne
 	if epXdata0[ep] || ep == 0 {
 		_usbDPSRAM.EPxBufferControl[ep].Out.SetBits(usbBuf0CtrlData1Pid)
 	}
@@ -274,7 +286,8 @@ func sendViaEPIn(ep uint32, data []byte, count int) {
 	_usbDPSRAM.EPxBufferControl[ep&0x7F].In.Set(val)
 }
 
-func sendStallViaEPIn(ep uint32) {
+// Enable ENDPOINT_HALT/stall on a USB IN endpoint
+func SetStallEPIn(ep uint32) {
 	// Prepare buffer control register value
 	if ep == 0 {
 		rp.USBCTRL_REGS.EP_STALL_ARM.Set(rp.USBCTRL_REGS_EP_STALL_ARM_EP0_IN)
@@ -283,6 +296,35 @@ func sendStallViaEPIn(ep uint32) {
 	_usbDPSRAM.EPxBufferControl[ep&0x7F].In.Set(val)
 	val |= uint32(usbBuf0CtrlStall)
 	_usbDPSRAM.EPxBufferControl[ep&0x7F].In.Set(val)
+}
+
+// Enable ENDPOINT_HALT/stall on a USB OUT endpoint
+func SetStallEPOut(ep uint32) {
+	if ep == 0 {
+		panic("SetStallEPOut: EP0 OUT not valid")
+	}
+	val := uint32(usbBuf0CtrlStall)
+	_usbDPSRAM.EPxBufferControl[ep&0x7F].Out.Set(val)
+}
+
+// Clear the ENDPOINT_HALT/stall on a USB IN endpoint
+func ClearStallEPIn(ep uint32) {
+	val := uint32(usbBuf0CtrlStall)
+	_usbDPSRAM.EPxBufferControl[ep&0x7F].In.ClearBits(val)
+	if epXPIDReset[ep] {
+		// Reset the PID to DATA0
+		setEPDataPID(ep, false)
+	}
+}
+
+// Clear the ENDPOINT_HALT/stall on a USB OUT endpoint
+func ClearStallEPOut(ep uint32) {
+	val := uint32(usbBuf0CtrlStall)
+	_usbDPSRAM.EPxBufferControl[ep&0x7F].Out.ClearBits(val)
+	if epXPIDReset[ep] {
+		// Reset the PID to DATA0
+		setEPDataPID(ep, false)
+	}
 }
 
 type usbDPSRAM struct {
@@ -309,9 +351,10 @@ type usbBuffer struct {
 }
 
 var (
-	_usbDPSRAM = (*usbDPSRAM)(unsafe.Pointer(uintptr(0x50100000)))
-	epXdata0   [16]bool
-	setupBytes [8]byte
+	_usbDPSRAM  = (*usbDPSRAM)(unsafe.Pointer(uintptr(0x50100000)))
+	epXdata0    [16]bool
+	epXPIDReset [16]bool
+	setupBytes  [8]byte
 )
 
 func (d *usbDPSRAM) setupBytes() []byte {

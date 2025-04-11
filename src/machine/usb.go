@@ -123,6 +123,7 @@ var (
 	usbTxHandler    [usb.NumberOfEndpoints]func()
 	usbRxHandler    [usb.NumberOfEndpoints]func([]byte)
 	usbSetupHandler [usb.NumberOfInterfaces]func(usb.Setup) bool
+	usbStallHandler [usb.NumberOfEndpoints]func(usb.Setup) bool
 
 	endPoints = []uint32{
 		usb.CONTROL_ENDPOINT:  usb.ENDPOINT_TYPE_CONTROL,
@@ -212,6 +213,9 @@ func handleStandardSetup(setup usb.Setup) bool {
 		if setup.WValueL == 1 { // DEVICEREMOTEWAKEUP
 			isRemoteWakeUpEnabled = false
 		} else if setup.WValueL == 0 { // ENDPOINTHALT
+			if usbStallHandler[setup.WIndex&0x7F] != nil {
+				return usbStallHandler[setup.WIndex&0x7F](setup)
+			}
 			isEndpointHalt = false
 		}
 		SendZlp()
@@ -221,6 +225,9 @@ func handleStandardSetup(setup usb.Setup) bool {
 		if setup.WValueL == 1 { // DEVICEREMOTEWAKEUP
 			isRemoteWakeUpEnabled = true
 		} else if setup.WValueL == 0 { // ENDPOINTHALT
+			if usbStallHandler[setup.WIndex&0x7F] != nil {
+				return usbStallHandler[setup.WIndex&0x7F](setup)
+			}
 			isEndpointHalt = true
 		}
 		SendZlp()
@@ -319,6 +326,9 @@ func ConfigureUSBEndpoint(desc descriptor.Descriptor, epSettings []usb.EndpointC
 			if ep.RxHandler != nil {
 				usbRxHandler[ep.Index] = ep.RxHandler
 			}
+		}
+		if ep.StallHandler != nil {
+			usbStallHandler[ep.Index] = ep.StallHandler
 		}
 	}
 
