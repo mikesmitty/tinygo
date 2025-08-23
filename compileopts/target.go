@@ -3,6 +3,7 @@ package compileopts
 // This file loads a target specification from a JSON file.
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/tinygo-org/tinygo/goenv"
+	"sigs.k8s.io/yaml"
 )
 
 // Target specification for a given target. Used for bare metal targets.
@@ -126,6 +128,18 @@ func (spec *TargetSpec) load(r io.Reader) error {
 	return nil
 }
 
+func (spec *TargetSpec) loadYAML(r io.Reader) error {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	jsonData, err := yaml.YAMLToJSON(b)
+	if err != nil {
+		return err
+	}
+	return spec.load(bytes.NewBuffer(jsonData))
+}
+
 // loadFromGivenStr loads the TargetSpec from the given string that could be:
 //   - targets/ directory inside the compiler sources
 //   - a relative or absolute path to custom (project specific) target specification .json file;
@@ -133,16 +147,30 @@ func (spec *TargetSpec) load(r io.Reader) error {
 //     as well as path to custom files (ex. myAwesomeProject.json)
 func (spec *TargetSpec) loadFromGivenStr(str string) error {
 	path := ""
+	isYaml := false
 	if strings.HasSuffix(str, ".json") {
 		path, _ = filepath.Abs(str)
+	} else if strings.HasSuffix(str, ".yaml") || strings.HasSuffix(str, ".yml") {
+		path, _ = filepath.Abs(str)
+		isYaml = true
 	} else {
 		path = filepath.Join(goenv.Get("TINYGOROOT"), "targets", strings.ToLower(str)+".json")
+
+		yamlPath := filepath.Join(goenv.Get("TINYGOROOT"), "targets", strings.ToLower(str)+".yaml")
+		_, err := os.Stat(yamlPath)
+		if err == nil {
+			path = yamlPath
+			isYaml = true
+		}
 	}
 	fp, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer fp.Close()
+	if isYaml {
+		return spec.loadYAML(fp)
+	}
 	return spec.load(fp)
 }
 
